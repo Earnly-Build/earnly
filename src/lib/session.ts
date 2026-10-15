@@ -15,13 +15,15 @@ function b64url(input: Buffer | string): string {
   return Buffer.from(input).toString("base64url");
 }
 
-export function signSession(userId: string): string {
-  const body = b64url(JSON.stringify({ uid: userId, iat: Date.now() }));
+export function signSession(userId: string, sessionId: string): string {
+  const body = b64url(JSON.stringify({ uid: userId, sid: sessionId, iat: Date.now() }));
   const mac = createHmac("sha256", secret()).update(body).digest("base64url");
   return `${body}.${mac}`;
 }
 
-export function readSessionToken(token: string | undefined): string | null {
+export function readSessionToken(
+  token: string | undefined,
+): { uid: string; sid: string } | null {
   if (!token) return null;
   const [body, mac] = token.split(".");
   if (!body || !mac) return null;
@@ -32,11 +34,14 @@ export function readSessionToken(token: string | undefined): string | null {
   try {
     const parsed = JSON.parse(Buffer.from(body, "base64url").toString()) as {
       uid?: string;
+      sid?: string;
       iat?: number;
     };
-    if (!parsed.uid || !parsed.iat) return null;
+    // Tokens minted before sid existed can't be revoked — rejected
+    // rather than carried (a forced re-login beats an unkillable session).
+    if (!parsed.uid || !parsed.sid || !parsed.iat) return null;
     if (Date.now() - parsed.iat > MAX_AGE * 1000) return null;
-    return parsed.uid;
+    return { uid: parsed.uid, sid: parsed.sid };
   } catch {
     return null;
   }
@@ -62,9 +67,14 @@ export type SessionUser = {
 
 export async function getSession(): Promise<SessionUser | null> {
   const store = await cookies();
-  const userId = readSessionToken(store.get(SESSION_COOKIE)?.value);
-  if (!userId) return null;
-  return loadUser(userId);
+  const token = readSessionToken(store.get(SESSION_COOKIE)?.value);
+  if (!token) return null;
+  const sql = db();
+  // The row IS the session — gone (revoked/expired-swept) means the
+  // token is dead even though its MAC still verifies.
+  const live = (await sql`select 1 from sessions where id = ${token.sid} limit 1`);
+  if (!live[0]) return null;
+  return loadUser(token.uid);
 }
 
 export async function loadUser(userId: string): Promise<SessionUser | null> {
@@ -92,14 +102,25 @@ export async function loadUser(userId: string): Promise<SessionUser | null> {
 
 export async function createSession(userId: string, userAgent?: string | null) {
   const sql = db();
-  await sql`insert into sessions (user_id, user_agent) values (${userId}, ${userAgent ?? null})`;
+  const rows = (await sql`insert into sessions (user_id, user_agent)
+    values (${userId}, ${userAgent ?? null}) returning id`) as { id: string }[];
   await sql`update users set last_login_at = now(), updated_at = now() where id = ${userId}`;
   const store = await cookies();
-  store.set(SESSION_COOKIE, signSession(userId), cookieOptions);
+  store.set(SESSION_COOKIE, signSession(userId, rows[0].id), cookieOptions);
 }
 
 export async function destroySession() {
   const store = await cookies();
+  const token = readSessionToken(store.get(SESSION_COOKIE)?.value);
+  const sql = db();
+  if (token) {
+    // Revoke THIS session only — other devices' sessions for the same
+    // user are untouched (the issue documents one-sign-out ≠ global).
+    await sql`delete from sessions where id = ${token.sid}`;
+  }
+  // Opportunistic sweep: rows older than MAX_AGE are dead anyway —
+  // delete them on sign-out so the table doesn't grow forever.
+  await sql`delete from sessions where created_at < now() - interval '30 days'`;
   store.set(SESSION_COOKIE, "", { ...cookieOptions, maxAge: 0 });
 }
 
