@@ -1,10 +1,19 @@
 import { errorResponse, okResponse, requireUser } from "@/lib/chain/api";
 import { ensureAllWallets, listWallets, publicWallet } from "@/lib/chain/wallets";
+import { assertSameOrigin, CsrfError } from "@/lib/csrf";
 
 export const dynamic = "force-dynamic";
 
 /** Explicit retry for a wallet whose provisioning previously failed. */
-export async function POST() {
+export async function POST(request: Request) {
+  try {
+    assertSameOrigin(request);
+  } catch (e) {
+    if (e instanceof CsrfError)
+      return errorResponse("forbidden", e.message, 403);
+    throw e;
+  }
+
   const guard = await requireUser();
   if (!guard.ok) return guard.response;
 

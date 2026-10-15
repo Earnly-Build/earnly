@@ -172,7 +172,14 @@ export async function signUpWithEmail(rawEmail: string, password: string): Promi
     select a.id from auth_accounts a
     where a.provider = 'email' and a.provider_account_id = ${email} limit 1
   `) as { id: string }[];
-  if (existing[0]) return { ok: false, error: "An Earnly account already uses this email. Sign in instead." };
+  // Enumeration-safe (issue #18): an existing email returns the same
+  // success shape as a fresh signup — no session, no user payload, and
+  // the hash still runs so timing doesn't leak either. The route turns
+  // this ok into the uniform "check your email"-style body.
+  if (existing[0]) {
+    await hashPassword(password);           // equalize the work path
+    return { ok: true, userId: "" };
+  }
 
   const { salt, hash } = await hashPassword(password);
   let userId: string;
@@ -206,6 +213,10 @@ export async function signInWithEmail(rawEmail: string, password: string): Promi
   `) as { user_id: string; password_hash: string | null; password_salt: string | null }[];
   const row = rows[0];
   if (!row || !row.password_hash || !row.password_salt) {
+    // Timing-equalized miss (issue #7): unknown emails still pay the
+    // scrypt cost so response time can't reveal existence.
+    const dummy = await hashPassword(password, "00000000000000000000000000000000");
+    void dummy;
     return { ok: false, error: "No Earnly account matches that email and password." };
   }
   const derived = (await scrypt(password, row.password_salt, 64)) as Buffer;

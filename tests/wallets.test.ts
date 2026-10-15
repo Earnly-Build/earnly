@@ -71,7 +71,7 @@ vi.mock("@/lib/db", () => {
   return { db: () => sql, databaseConfigured: true };
 });
 
-const { ensureAllWallets, ensureWallet, listWallets, signingSecret } = await import(
+const { ensureAllWallets, ensureWallet, listWallets, mapConcurrent, signingSecret } = await import(
   "@/lib/chain/wallets"
 );
 
@@ -137,5 +137,61 @@ describe("ensureAllWallets", () => {
     await ensureAllWallets("user-4");
     expect(store.wallets).toHaveLength(2);
     expect(await listWallets("user-4")).toHaveLength(2);
+  });
+});
+
+describe("mapConcurrent transaction reconciliation", () => {
+  it("processes all items and bounds concurrency to the limit", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const items = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    const processed: number[] = [];
+
+    await mapConcurrent(items, 5, async (item) => {
+      active++;
+      if (active > maxActive) maxActive = active;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      processed.push(item);
+      active--;
+    });
+
+    expect(maxActive).toBeLessThanOrEqual(5);
+    expect(processed).toHaveLength(10);
+    expect(processed.sort((a, b) => a - b)).toEqual(items);
+  });
+
+  it("measurably reduces wall time compared to serial execution", async () => {
+    const items = Array.from({ length: 6 }, (_, i) => i + 1);
+    const delay = 50;
+
+    const start = Date.now();
+    await mapConcurrent(items, 3, async () => {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    });
+    const elapsed = Date.now() - start;
+
+    // Serial total would be 6 * 50ms = 300ms.
+    // Concurrency 3 yields 2 batches of 3 items = ~100ms.
+    expect(elapsed).toBeLessThan(250);
+  });
+
+  it("isolates errors so a single failing transaction does not abort other reconciliations", async () => {
+    const items = [1, 2, 3, 4, 5];
+    const processed: number[] = [];
+
+    const results = await mapConcurrent(items, 3, async (item) => {
+      if (item === 3) {
+        throw new Error("RPC network timeout");
+      }
+      processed.push(item);
+      return item * 10;
+    });
+
+    expect(processed).toEqual([1, 2, 4, 5]);
+    expect(results[0]).toBe(10);
+    expect(results[1]).toBe(20);
+    expect(results[2]).toBeUndefined();
+    expect(results[3]).toBe(40);
+    expect(results[4]).toBe(50);
   });
 });

@@ -6,6 +6,7 @@ import { useApp } from "@/lib/store";
 import type { Opportunity, OpportunityKind, WorkMode } from "@/lib/types";
 import { OpportunityCard } from "./cards";
 import { Button, EmptyState, Icon, Tag } from "./ui";
+import { weeklyEquivalent } from "@/lib/pay";
 
 type Sort = "match" | "newest" | "pay";
 
@@ -41,7 +42,7 @@ export function Browse({
     let out = pool.filter((o) => {
       if (cat !== "All" && o.category !== cat) return false;
       if (mode !== "All" && o.mode !== mode) return false;
-      if (minPay > 0 && o.pay.amount < minPay) return false;
+      if (minPay > 0 && weeklyEquivalent(o.pay) < minPay) return false;
       if (savedOnly && !saved.includes(o.id)) return false;
       if (t && !`${o.title} ${o.org} ${o.skills.join(" ")} ${o.summary}`.toLowerCase().includes(t))
         return false;
@@ -50,7 +51,7 @@ export function Browse({
     out = [...out].sort((a, b) => {
       if (sort === "match") return b.match - a.match;
       if (sort === "newest") return a.postedDaysAgo - b.postedDaysAgo;
-      return b.pay.amount - a.pay.amount;
+      return weeklyEquivalent(b.pay) - weeklyEquivalent(a.pay);
     });
     return out;
   }, [pool, q, cat, mode, minPay, sort, savedOnly, saved]);
@@ -112,6 +113,8 @@ export function Browse({
             <button
               key={m}
               onClick={() => setMode(m)}
+              aria-pressed={mode === m}
+              aria-label={m === "All" ? "All work modes" : undefined}
               className={`flex-none rounded-full border px-3 py-1.5 text-[12.5px] font-semibold transition-colors ${
                 mode === m ? "border-accent bg-accent text-onaccent" : "border-rule text-ink2"
               }`}
@@ -126,6 +129,8 @@ export function Browse({
             <button
               key={c}
               onClick={() => setCat(c)}
+              aria-pressed={cat === c}
+              aria-label={c === "All" ? "All categories" : undefined}
               className={`rounded-full px-2.5 py-1 text-[11.5px] transition-colors ${
                 cat === c ? "bg-ink text-ground" : "text-ink3 hover:text-ink"
               }`}
@@ -144,6 +149,8 @@ export function Browse({
             <button
               key={p}
               onClick={() => setMinPay(p)}
+              aria-pressed={minPay === p}
+              aria-label={p === 0 ? "Any minimum pay" : `Minimum pay ${p}+`}
               className={`rounded-full px-2.5 py-1 font-semibold transition-colors ${
                 minPay === p ? "bg-accent/20 text-accentx" : "hover:text-ink"
               }`}
@@ -169,6 +176,9 @@ export function Browse({
                 setCat("All");
                 setMode("All");
                 setMinPay(0);
+                setSavedOnly(false);
+                setSort("match");
+                setVisible(6);
               }}
             >
               Clear filters

@@ -138,6 +138,19 @@ the exact managed-provider blocker, how Stellar and Sepolia transactions are
 signed and confirmed, the schema, the API surface, every environment variable,
 what the test suites cover and what is still outstanding.
 
+## API error contract
+
+Every route under `/api/**` returns one error shape via
+`errorResponse(code, message, status, retryable)` from `src/lib/api.ts`:
+
+```json
+{ "ok": false, "code": "unauthorized", "error": "Sign in to use your wallet.", "retryable": false }
+```
+
+`error` stays human-readable (existing clients keep working), `code` is
+machine-stable for programmatic handling, and `retryable` tells callers a
+retry can succeed. Success responses use `okResponse()` → `{ ok: true, ... }`.
+
 ## Architecture
 
 ```

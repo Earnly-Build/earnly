@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   Asset,
   BASE_FEE,
+  Config,
   Horizon,
   Keypair,
   Memo,
@@ -46,11 +47,18 @@ export function assertStellarTestnet(): void {
   }
 }
 
+export const HORIZON_TIMEOUT_MS = 15_000;
+
 let cachedServer: Horizon.Server | null = null;
 
 export function horizon(): Horizon.Server {
   assertStellarTestnet();
   if (!cachedServer) {
+    // Bounded reads (issue #10): the SDK's axios adapter honors the
+    // global Config timeout for every call — loadAccount/feeStats/
+    // .call()/submitTransaction all die at 15s instead of stalling the
+    // request until the platform kills it.
+    Config.setTimeout(HORIZON_TIMEOUT_MS);
     cachedServer = new Horizon.Server(STELLAR.horizonUrl, { allowHttp: false });
   }
   return cachedServer;
@@ -99,6 +107,7 @@ export type StellarServiceError = {
   code:
     | "account_not_found"
     | "horizon_unavailable"
+    | "timeout"
     | "rate_limited"
     | "not_funded"
     | "already_funded"
@@ -134,6 +143,7 @@ function isRateLimited(error: unknown): boolean {
   const status = (error as { response?: { status?: number } })?.response?.status;
   return status === 429;
 }
+
 
 export function minimumBalanceXlm(subentries: number, sponsoring: number, sponsored: number): string {
   const units = 2 + subentries + sponsoring - sponsored;
@@ -193,6 +203,9 @@ export async function accountSnapshot(address: string): Promise<StellarAccountSn
       lastModifiedLedger: account.last_modified_ledger ?? null,
     };
   } catch (error) {
+    if (isTimeoutLike(error)) {
+      throw new StellarError("timeout", "The Horizon account read timed out.", true);
+    }
     if (isNotFound(error)) {
       return {
         address,
@@ -315,6 +328,9 @@ export async function accountActivity(address: string, limit = 15): Promise<Stel
       .call()) as unknown as { records: OperationRecord[] };
     operations = page.records ?? [];
   } catch (error) {
+    if (isTimeoutLike(error)) {
+      throw new StellarError("timeout", "The Horizon activity read timed out.", true);
+    }
     if (isNotFound(error)) return [];
     if (isRateLimited(error)) {
       throw new StellarError("rate_limited", "Stellar Testnet is rate limiting requests.", true);
@@ -587,9 +603,25 @@ function describeSubmitError(error: unknown): string {
   return shaped?.response?.data?.detail || shaped?.message || "The network rejected the transaction.";
 }
 
-function isTimeout(error: unknown): boolean {
+export function isTimeoutLike(error: unknown): boolean {
   const status = (error as { response?: { status?: number } })?.response?.status;
-  return status === 504 || status === 408;
+  if (status === 504 || status === 408) return true;
+  // axios-side aborts — the Config timeout fires as ECONNABORTED /
+  // "timeout of Nms exceeded" without an HTTP status.
+  const code = (error as { code?: string })?.code;
+  const msg = (error as { message?: string })?.message ?? "";
+  return code === "ECONNABORTED" || /timeout of \d/.test(msg);
+}
+
+/** Horizon failures → typed StellarError; timeouts are retryable so the
+ * route can degrade instead of dying. */
+export function asStellarError(error: unknown): StellarError | null {
+  if (error instanceof StellarError) return error;
+  if (isTimeoutLike(error))
+    return new StellarError("timeout", "The Stellar Horizon request timed out.", true);
+  if (isRateLimited(error))
+    return new StellarError("rate_limited", "Stellar Testnet is rate limiting requests.", true);
+  return null;
 }
 
 /**
@@ -717,7 +749,7 @@ export async function sendPayment(input: PaymentInput): Promise<PaymentOutcome> 
       createdAt: new Date().toISOString(),
     };
   } catch (error) {
-    if (isTimeout(error)) {
+    if (isTimeoutLike(error)) {
       // Uncertain outcome. Never resubmit here: the row stays pending until
       // reconciliation proves whether the ledger accepted it.
       await updateTransaction(record.id, {
@@ -746,13 +778,26 @@ export async function sendPayment(input: PaymentInput): Promise<PaymentOutcome> 
   }
 }
 
+/** Grace period before a Horizon 404 marks a pending transaction as failed. */
+export const STELLAR_RECONCILE_GRACE_MS = STELLAR.reconcileGraceMs;
+/** Maximum 404 reconciliation attempts within the grace window before failing. */
+export const STELLAR_RECONCILE_MAX_ATTEMPTS = STELLAR.reconcileMaxAttempts;
+
+export interface ReconcileStellarRecord {
+  id: string;
+  tx_hash: string | null;
+  created_at?: string | Date | null;
+  status_synced_at?: string | Date | null;
+  reconcile_attempts?: number | null;
+}
+
 /**
  * Reconciles a recorded transaction against Horizon. Used to resolve rows left
  * `pending`/`unknown` and to keep our record in step with the network.
  */
 export async function reconcileStellarTransaction(
   userId: string,
-  record: { id: string; tx_hash: string | null }
+  record: ReconcileStellarRecord
 ): Promise<boolean> {
   if (!record.tx_hash) return false;
   try {
@@ -769,10 +814,28 @@ export async function reconcileStellarTransaction(
     return true;
   } catch (error) {
     if (isNotFound(error)) {
-      // Horizon has no such transaction: it was never included.
+      const nextAttempts = (record.reconcile_attempts ?? 0) + 1;
+      const createdAtMs =
+        record.created_at != null ? new Date(record.created_at).getTime() : Date.now();
+      const ageMs = Number.isFinite(createdAtMs) ? Math.max(0, Date.now() - createdAtMs) : 0;
+      const graceExpired =
+        ageMs >= STELLAR_RECONCILE_GRACE_MS || nextAttempts >= STELLAR_RECONCILE_MAX_ATTEMPTS;
+
+      if (!graceExpired) {
+        // Horizon has not ingested the transaction yet; keep it pending during the grace window.
+        await updateTransaction(record.id, {
+          status: "pending",
+          reconcile_attempts: nextAttempts,
+        });
+        return false;
+      }
+
+      // Past the grace window or max attempts: Horizon has no record of this transaction.
       await updateTransaction(record.id, {
         status: "failed",
-        error: "Stellar Testnet has no record of this transaction.",
+        reconcile_attempts: nextAttempts,
+        error:
+          "Stellar Testnet has no record of this transaction after the reconciliation grace period.",
       });
       return true;
     }

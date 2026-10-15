@@ -349,19 +349,11 @@ export async function sendEvmTransfer(input: EvmSendInput): Promise<EvmSendOutco
   const client = createWalletClient({ account, chain: sepolia, transport: http(EVM.rpcUrl) });
   const value = BigInt(preview.amountWei);
 
-  let hash: Hex;
-  try {
-    hash = await client.sendTransaction({
-      account,
-      chain: sepolia,
-      to: preview.to as Address,
-      value,
-    });
-  } catch (error) {
-    const message = describeEvmError(error);
-    throw new EvmError("submit_failed", message);
-  }
-
+  // Record the pending row BEFORE broadcasting — mirrors the Stellar
+  // path's documented ordering ("the application record is written
+  // *before* submission"). A crash between record and broadcast leaves
+  // a recoverable pending row keyed by the idempotency key; a retried
+  // send replays through the guard above instead of broadcasting twice.
   const record = await recordTransaction({
     userId: input.userId,
     walletId: wallet.id,
@@ -373,10 +365,35 @@ export async function sendEvmTransfer(input: EvmSendInput): Promise<EvmSendOutco
     fee: preview.estimatedFeeEth,
     senderAddress: preview.from,
     recipientAddress: preview.to,
-    txHash: hash,
+    txHash: null,
     status: "pending",
-    explorerUrl: explorerTxUrl("evm", hash),
+    explorerUrl: null,
     idempotencyKey: input.idempotencyKey ?? null,
+  });
+
+  let hash: Hex;
+  try {
+    hash = await client.sendTransaction({
+      account,
+      chain: sepolia,
+      to: preview.to as Address,
+      value,
+    });
+  } catch (error) {
+    const message = describeEvmError(error);
+    // Broadcast never reached the network — the row stays auditable.
+    await updateTransaction(record.id, {
+      status: "failed",
+      error: message,
+    });
+    throw new EvmError("submit_failed", message);
+  }
+
+  // Broadcast accepted — stamp the real hash before waiting on a
+  // receipt so the row is reconcileable by hash from here on.
+  await updateTransaction(record.id, {
+    tx_hash: hash,
+    explorer_url: explorerTxUrl("evm", hash),
   });
 
   try {

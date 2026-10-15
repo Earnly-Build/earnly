@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type { AppStage } from "@/lib/types";
 
 /* ------------------------------------------------------------------ icons */
@@ -316,10 +316,35 @@ export function Modal({
   wide?: boolean;
   label: string;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const restoreRef = useRef<Element | null>(null);
+
   useEffect(() => {
     if (!open) return;
+    restoreRef.current = document.activeElement;
+    const dialog = dialogRef.current;
+    // Focus the first focusable element inside, else the dialog itself —
+    // a keyboard user lands IN the dialog, not on the page behind it.
+    const focusables = dialog?.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    (focusables?.[0] ?? dialog)?.focus();
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") { onClose(); return; }
+      if (e.key !== "Tab" || !dialog) return;
+      // Tab trap: cycle focus inside the dialog.
+      const items = dialog.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      if (!items.length) { e.preventDefault(); dialog.focus(); return; }
+      const first = items[0], last = items[items.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !dialog.contains(active))) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && (active === last || !dialog.contains(active))) {
+        e.preventDefault(); first.focus();
+      }
     };
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
@@ -327,6 +352,8 @@ export function Modal({
     return () => {
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
+      // Focus returns to the element that opened the dialog.
+      (restoreRef.current as HTMLElement | null)?.focus?.();
     };
   }, [open, onClose]);
 
@@ -335,13 +362,16 @@ export function Modal({
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
       <button
         aria-label="Close"
+        tabIndex={-1}
         onClick={onClose}
         className="absolute inset-0 bg-black/60 backdrop-blur-[2px]"
       />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={label}
+        tabIndex={-1}
         className={`settle relative z-10 max-h-[92vh] w-full overflow-y-auto overscroll-contain bg-raised p-6 shadow-2xl sm:m-6 sm:rounded-[24px] rounded-t-[24px] ${
           wide ? "sm:max-w-[860px]" : "sm:max-w-[560px]"
         }`}

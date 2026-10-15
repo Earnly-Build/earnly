@@ -50,6 +50,7 @@ export interface TransactionRow {
   ledger: string | null;
   explorer_url: string | null;
   error: string | null;
+  reconcile_attempts?: number;
   created_at: string;
   status_synced_at: string | null;
 }
@@ -292,7 +293,12 @@ export async function findByIdempotencyKey(
 
 export async function updateTransaction(
   id: string,
-  patch: Partial<Pick<TransactionRow, "status" | "tx_hash" | "ledger" | "error" | "explorer_url">>
+  patch: Partial<
+    Pick<
+      TransactionRow,
+      "status" | "tx_hash" | "ledger" | "error" | "explorer_url" | "reconcile_attempts"
+    >
+  >
 ): Promise<TransactionRow | null> {
   const sql = db();
   const rows = (await sql`
@@ -302,6 +308,7 @@ export async function updateTransaction(
         ledger = coalesce(${patch.ledger ?? null}, ledger),
         error = coalesce(${patch.error ?? null}, error),
         explorer_url = coalesce(${patch.explorer_url ?? null}, explorer_url),
+        reconcile_attempts = coalesce(${patch.reconcile_attempts ?? null}, reconcile_attempts),
         status_synced_at = now()
     where id = ${id}
     returning *
@@ -335,4 +342,35 @@ export async function getTransaction(
     limit 1
   `) as TransactionRow[];
   return rows[0] ?? null;
+}
+
+/**
+ * Concurrently processes an array of items with bounded concurrency.
+ * Ensures that individual worker errors are caught so one failing item
+ * does not abort or reject the remaining batch.
+ */
+export async function mapConcurrent<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>
+): Promise<(R | undefined)[]> {
+  const cap = Math.max(1, Math.min(limit, items.length));
+  if (items.length === 0) return [];
+
+  const results: (R | undefined)[] = new Array(items.length);
+  let nextIndex = 0;
+
+  const runners = Array.from({ length: cap }, async () => {
+    while (nextIndex < items.length) {
+      const current = nextIndex++;
+      try {
+        results[current] = await worker(items[current]);
+      } catch {
+        // Error isolation: one failing task does not reject others
+      }
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
 }

@@ -2,12 +2,27 @@ import { EVM } from "@/lib/chain/config";
 import { errorResponse, okResponse, requireUser } from "@/lib/chain/api";
 import { evmActivityFor } from "@/lib/chain/activity";
 import { EvmError, assertSepolia, evmSnapshot, reconcileEvmTransaction } from "@/lib/chain/evm";
-import { ensureWallet, listTransactions, markBalanceSynced, publicWallet } from "@/lib/chain/wallets";
+import {
+  ensureWallet,
+  listTransactions,
+  markBalanceSynced,
+  publicWallet,
+} from "@/lib/chain/wallets";
+import { mapConcurrent } from "@/lib/concurrency";
+import { assertSameOrigin, CsrfError } from "@/lib/csrf";
 
 export const dynamic = "force-dynamic";
 
 /** Ethereum Sepolia dashboard payload: address, live balance and activity. */
 export async function GET(request: Request) {
+  try {
+    assertSameOrigin(request);
+  } catch (e) {
+    if (e instanceof CsrfError)
+      return errorResponse("forbidden", e.message, 403);
+    throw e;
+  }
+
   const guard = await requireUser();
   if (!guard.ok) return guard.response;
 
@@ -18,11 +33,20 @@ export async function GET(request: Request) {
     const wallet = await ensureWallet(guard.user.id, "evm");
 
     const rows = await listTransactions(guard.user.id, "evm", 25);
-    for (const row of rows) {
-      if ((row.status === "pending" || row.status === "unknown") && row.tx_hash) {
-        await reconcileEvmTransaction(row.id, row.tx_hash);
+    const pendingRows = rows.filter(
+      (row) => (row.status === "pending" || row.status === "unknown") && row.tx_hash
+    );
+    await mapConcurrent(pendingRows, 5, async (row) => {
+      try {
+        await reconcileEvmTransaction(row.id, row.tx_hash!);
+      } catch {
+        // Best effort: an RPC hiccup must not break the dashboard
       }
-    }
+    });
+    // Bounded-concurrency reconcile — same pattern as the stellar route.
+    await mapConcurrent(rows.filter(
+      (row) => (row.status === "pending" || row.status === "unknown") && row.tx_hash
+    ), 5, (row) => reconcileEvmTransaction(row.id, row.tx_hash!));
 
     await assertSepolia();
     const snapshot = await evmSnapshot(wallet.address);

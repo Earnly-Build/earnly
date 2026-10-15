@@ -64,3 +64,26 @@ describe("formatAtomic", () => {
     expect(shortAmount("1.000000", 4)).toBe("1");
   });
 });
+
+describe("toAtomic — no float path (issue #13)", () => {
+  it("exact for valid inputs, unchanged", () => {
+    expect(toAtomic("0.1", 7)).toBe(1000000n);
+    expect(toAtomic("1.5", 18)).toBe(1500000000000000000n);
+    expect(toAtomic(42, 7)).toBe(420000000n);
+  });
+
+  it("rejects scientific notation instead of float-converting", () => {
+    // String(1e-7) = "1e-7" — the old path computed Math.round(1e-7*1e7)=1n,
+    // silently inventing a stroop. Now it refuses.
+    expect(() => toAtomic(1e-7, 7)).toThrow(/decimal literal/);
+    expect(() => toAtomic(1e21, 18)).toThrow(/decimal literal/);
+    expect(() => toAtomic("abc", 7)).toThrow();
+    expect(() => toAtomic(Number.NaN, 7)).toThrow();
+  });
+
+  it("a number beyond 2^53 still parses exactly as a string", () => {
+    // 9007199254740993 as a NUMBER loses precision before we see it — the
+    // string form is the contract; the literal keeps every digit.
+    expect(toAtomic("9007199254740993", 0)).toBe(9007199254740993n);
+  });
+});

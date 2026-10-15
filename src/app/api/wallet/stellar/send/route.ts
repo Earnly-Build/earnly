@@ -6,6 +6,7 @@ import {
   sendPayment,
 } from "@/lib/chain/stellar";
 import { ensureWallet } from "@/lib/chain/wallets";
+import { assertSameOrigin, CsrfError } from "@/lib/csrf";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,14 @@ export const dynamic = "force-dynamic";
  * idempotency key returns the first result instead of sending a second payment.
  */
 export async function POST(request: Request) {
+  try {
+    assertSameOrigin(request);
+  } catch (e) {
+    if (e instanceof CsrfError)
+      return errorResponse("forbidden", e.message, 403);
+    throw e;
+  }
+
   const guard = await requireUser();
   if (!guard.ok) return guard.response;
 

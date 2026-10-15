@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -21,6 +22,13 @@ import type {
   AiPrefs,
   AiResult,
   AppStage,
+import { ActivityClient, activitySlice } from "./activity-client";
+import type { ActivityState } from "./activity-types";
+import type {
+  AiPrefs,
+  AiResult,
+  Application,
+  Notif,
   Student,
   Txn,
   VerificationState,
@@ -73,6 +81,59 @@ const initial: Persisted = {
   theme: "light",
 };
 
+/**
+ * Persisted-payload versioning (issue #27).
+ *
+ * The stored value is an envelope `{ v, data }`: `v` is the schema
+ * version, `data` the Persisted slice. Payloads written before the
+ * envelope existed are version 0 (a bare Persisted object) and migrate
+ * forward through MIGRATIONS.
+ *
+ * Rules: missing/unparsable → `initial` (never throw); older → migrate
+ * each version step; newer (a payload from a future deploy) → `initial`,
+ * never half-apply.
+ */
+export const SCHEMA_VERSION = 1;
+
+interface Envelope {
+  v: number;
+  data: unknown;
+}
+
+/** MIGRATIONS[n] upgrades a v<n> payload's data to v<n+1>. */
+const MIGRATIONS: Record<number, (data: unknown) => unknown> = {
+  // v0 → v1: the pre-envelope bare Persisted object carries forward
+  // verbatim — the shape itself hasn't changed; this documents the
+  // migration seam for the next shape change.
+  0: (data) => data,
+};
+
+export function loadPersisted(raw: string | null): Persisted {
+  if (!raw) return initial;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return initial;                          // corrupt JSON → defaults
+  }
+  if (!parsed || typeof parsed !== "object") return initial;
+  const env = parsed as Partial<Envelope>;
+  let version = typeof env.v === "number" ? env.v : 0;
+  let data: unknown = version === 0 ? parsed : env.data;
+  if (version > SCHEMA_VERSION) return initial;   // future payload — discard
+  while (version < SCHEMA_VERSION) {
+    const step = MIGRATIONS[version];
+    if (!step) return initial;                     // chain gap — discard
+    data = step(data);
+    version++;
+  }
+  return { ...initial, ...(data as Persisted) };
+}
+
+export function serializePersisted(state: Persisted): string {
+  return JSON.stringify({ v: SCHEMA_VERSION, data: state } satisfies Envelope);
+}
+
 export interface ProfilePatch {
   fullName?: string;
   course?: string;
@@ -114,7 +175,7 @@ interface Ctx extends Persisted {
   resetVerification: () => Promise<boolean>;
   completeOnboarding: (prefs: AiPrefs, patch?: ProfilePatch) => Promise<boolean>;
   saveAiPrefs: (prefs: AiPrefs) => void;
-  apply: (opportunityId: string) => void;
+  apply: (opportunityId: string, note?: string) => void;
   advance: (applicationId: string) => void;
   toggleSaved: (opportunityId: string) => void;
   markAllRead: () => void;
@@ -124,20 +185,48 @@ interface Ctx extends Persisted {
   reset: () => void;
 }
 
+/** Max length for an application note — enforced client-side (textarea)
+ * and store-side (truncate). Documented in the apply flow. */
+export const NOTE_MAX = 500;
+
+/** Build the application record for a fresh apply. The note is optional;
+ *  when present it's truncated to NOTE_MAX (store-side defense — the UI
+ *  caps the textarea but a caller could bypass it). */
+export function buildApplication(
+  opportunityId: string,
+  note?: string,
+): Application {
+  return {
+    id: `a${Date.now()}-${crypto.randomUUID()}`,
+    opportunityId,
+    stage: "Applied",
+    updatedDaysAgo: 0,
+    ...(note ? { note: note.slice(0, NOTE_MAX) } : {}),
+  };
+}
+
 const AppCtx = createContext<Ctx | null>(null);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<Persisted>(initial);
+  const [activity] = useState(() => new ActivityClient(initial, (slice) => setState((s) => ({ ...s, ...slice }))));
+  const refreshVersion = useRef(0);
+  const demoActivity = useRef<ActivityState>(activitySlice(initial));
   const [ready, setReady] = useState(false);
   const [aiResults, setAiResults] = useState<AiResult[] | null>(null);
   const [user, setUser] = useState<SessionUser | null>(null);
   const [database, setDatabase] = useState(false);
 
   const refresh = useCallback(async () => {
+    const version = ++refreshVersion.current;
     try {
       const res = await fetch("/api/auth/session", { cache: "no-store" });
+      if (!res.ok) throw new Error("Session lookup failed.");
       const data = (await res.json()) as { user: SessionUser | null; database?: boolean };
+      if (version !== refreshVersion.current) return;
       setDatabase(Boolean(data.database));
+      const id = data.user?.id ?? null;
+      if (!activity.belongsTo(id)) activity.reset(id);
       setUser(data.user ?? null);
       if (data.user?.profile) {
         setState((s) => ({
@@ -148,10 +237,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           aiPrefs: (data.user?.profile?.ai_prefs as AiPrefs) ?? s.aiPrefs,
         }));
       }
-    } catch {
-      /* offline: the local prototype store still works */
+      if (data.user) {
+        const revision = activity.revision;
+        const response = await fetch("/api/activity", { cache: "no-store", headers: { "x-earnly-user": data.user.id } });
+        const payload = (await response.json()) as { activity?: ActivityState };
+        if (!response.ok || !payload.activity) throw new Error("Activity lookup failed.");
+        if (version === refreshVersion.current) activity.hydrate(payload.activity, revision);
+      }
+    } catch (error) {
+      console.error("[earnly] session/activity refresh failed", error);
+      // No-account visits retain the local prototype; a known real account
+      // starts empty on read failure instead of inheriting another account/demo.
     }
-  }, []);
+  }, [activity]);
 
   useEffect(() => {
     // Read back the persisted prototype store first so a no-account visit still
@@ -165,6 +263,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // splash in AppShell keeps the first paint identical.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       if (raw) setState(loadPersisted(raw, initial));
+      if (raw) {
+        const persisted = loadPersisted(raw);
+        demoActivity.current = activitySlice(persisted);
+        activity.reset(null, persisted);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setState(persisted);
+      }
     } catch {
       /* a prototype store; a corrupt value just starts fresh */
     }
@@ -175,18 +280,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })();
     return () => {
       cancelled = true;
+      // This is a request generation counter, not a DOM ref: invalidate all
+      // outstanding session lookups when this provider is disposed.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      refreshVersion.current++;
+      activity.dispose();
     };
-  }, [refresh]);
+  }, [refresh, activity]);
 
   useEffect(() => {
     if (!ready) return;
     try {
       window.localStorage.setItem(KEY, serializePersisted(state));
+      if (!user) demoActivity.current = activitySlice(state);
+      // Real account activity is server-owned; do not carry it into a later
+      // anonymous visit or another account through the prototype cache.
+      window.localStorage.setItem(KEY, serializePersisted(user ? { ...state, ...demoActivity.current } : state));
     } catch {
       /* private mode */
     }
     document.documentElement.dataset.theme = state.theme;
-  }, [state, ready]);
+  }, [state, ready, user]);
 
   const update = useCallback((patch: Partial<Persisted>) => {
     setState((s) => ({ ...s, ...patch }));
@@ -271,19 +385,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       signIn: (method) =>
         update({ signedIn: true, authMethod: method, verification: "required" }),
       signOut: async () => {
+        refreshVersion.current++;
+        activity.reset(null, initial);
+        setUser(null);
+        setState({ ...initial, theme: state.theme });
         try {
           await fetch("/api/auth/signout", { method: "POST" });
         } catch {
           /* signing out locally is enough */
         }
-        setUser(null);
-        setState({ ...initial, theme: state.theme });
       },
       submitVerification: (patch) =>
         save({ verification: "pending", ...(patch ?? {}) }),
-      approveVerification: () => save({ verification: "verified" }),
-      failVerification: () => save({ verification: "failed" }),
-      resetVerification: () => save({ verification: "required" }),
+      // Simulate-* are demo simulators: they flip LOCAL state only and
+      // never write through the profile API — a signed-in user's stored
+      // verification is server-derived and snaps back on refresh().
+      approveVerification: () => {
+        update({ verification: "verified" });
+        return Promise.resolve(true);
+      },
+      failVerification: () => {
+        update({ verification: "failed" });
+        return Promise.resolve(true);
+      },
+      resetVerification: () => {
+        update({ verification: "required" });
+        return Promise.resolve(true);
+      },
       completeOnboarding: (prefs, patch) =>
         save({
           onboarded: true,
@@ -295,66 +423,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       saveAiPrefs: (prefs) => {
         void save({ aiPrefs: prefs }, { quiet: true });
       },
-      apply: (opportunityId) =>
-        setState((s) =>
-          s.applications.some((a) => a.opportunityId === opportunityId)
-            ? s
-            : {
-                ...s,
-                applications: [
-                  {
-                    id: `a${Date.now()}`,
-                    opportunityId,
-                    stage: "Applied" as AppStage,
-                    updatedDaysAgo: 0,
-                  },
-                  ...s.applications,
-                ],
-              }
-        ),
-      advance: (applicationId) =>
-        setState((s) => ({
-          ...s,
-          applications: s.applications.map((a) =>
-            a.id === applicationId
-              ? { ...a, stage: nextStage(a.stage), updatedDaysAgo: 0 }
-              : a
-          ),
-        })),
-      toggleSaved: (opportunityId) =>
-        setState((s) => ({
-          ...s,
-          saved: s.saved.includes(opportunityId)
-            ? s.saved.filter((x) => x !== opportunityId)
-            : [opportunityId, ...s.saved],
-        })),
-      markAllRead: () =>
-        setState((s) => ({
-          ...s,
-          notifications: s.notifications.map((n) => ({ ...n, unread: false })),
-        })),
+      apply: (opportunityId, note) => {
+        if (activity.state.applications.some((a) => a.opportunityId === opportunityId)) return;
+        const application = buildApplication(opportunityId, note);
+        activity.dispatch({ type: "apply", applicationId: application.id, opportunityId, note: application.note });
+      },
+      advance: (applicationId) => {
+        const application = activity.state.applications.find((a) => a.id === applicationId);
+        if (application && application.stage !== "Paid") activity.dispatch({ type: "advance", applicationId, expectedStage: application.stage });
+      },
+      toggleSaved: (opportunityId) => activity.dispatch({ type: "saved", opportunityId, saved: !activity.state.saved.includes(opportunityId) }),
+      markAllRead: () => activity.dispatch({ type: "read", notificationIds: activity.state.notifications.filter((n) => n.unread).map((n) => n.id) }),
       setTheme: (theme) => update({ theme }),
       reset: () => {
+        if (user) {
+          void refresh();
+          return;
+        }
+        activity.reset(null, initial);
         setState(initial);
         setAiResults(null);
       },
     };
-  }, [state, ready, aiResults, update, user, database, save, refresh]);
+  }, [state, ready, aiResults, update, user, database, save, refresh, activity]);
 
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
-}
-
-function nextStage(stage: AppStage): AppStage {
-  const order: AppStage[] = [
-    "Applied",
-    "Accepted",
-    "In progress",
-    "Submitted",
-    "Completed",
-    "Paid",
-  ];
-  const i = order.indexOf(stage);
-  return order[Math.min(i + 1, order.length - 1)];
 }
 
 export function useApp() {

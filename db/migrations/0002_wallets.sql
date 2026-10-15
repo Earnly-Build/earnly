@@ -59,9 +59,13 @@ create table if not exists wallet_transactions (
   explorer_url text,
   error text,
   idempotency_key text,
+  reconcile_attempts int not null default 0,
   created_at timestamptz not null default now(),
   status_synced_at timestamptz
 );
+
+alter table wallet_transactions
+  add column if not exists reconcile_attempts int not null default 0;
 
 create index if not exists wallet_transactions_user_idx
   on wallet_transactions (user_id, created_at desc);

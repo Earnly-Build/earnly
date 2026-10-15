@@ -159,6 +159,12 @@ export default function WorkPage() {
 
                 <p className="mt-3 text-[13px] text-ink2">{NEXT_ACTION[a.stage]}</p>
 
+                {a.note && (
+                  <p className="mt-2 rounded-[10px] border border-rule bg-ground p-3 text-[12.5px] text-ink3">
+                    <span className="font-semibold text-ink2">Note sent:</span> {a.note}
+                  </p>
+                )}
+
                 <div className="mt-4 flex items-center justify-between border-t border-rule pt-4">
                   <Money amount={o.pay.amount} className="text-[15px]" />
                   {a.stage !== "Paid" ? (

@@ -331,3 +331,73 @@ export function searchUniversities(
     .sort((a, b) => a.score - b.score || a.u.name.localeCompare(b.u.name));
   return scored.slice(0, limit).map((s) => s.u);
 }
+
+/**
+ * Country → Region lookup for rows that arrive without one (custom
+ * universities — issue #15: the API hardcoded "Africa" for everything).
+ * Built from the catalogue, then extended to cover countries the
+ * catalogue lacks. Unknown names fall back to a geographic guess table
+ * below — never silently "Africa".
+ */
+const DERIVED: Record<string, Region> = {};
+for (const u of UNIVERSITIES) {
+  if (!(u.country in DERIVED)) DERIVED[u.country] = u.region;
+}
+
+const EXTRA: Record<string, Region> = {
+  // Africa
+  "Algeria": "Africa", "Angola": "Africa", "Benin": "Africa",
+  "Botswana": "Africa", "Burkina Faso": "Africa", "Burundi": "Africa",
+  "Cameroon": "Africa", "Cape Verde": "Africa", "Chad": "Africa",
+  "Comoros": "Africa", "Congo": "Africa", "DR Congo": "Africa",
+  "Djibouti": "Africa", "Eritrea": "Africa", "Eswatini": "Africa",
+  "Gabon": "Africa", "Gambia": "Africa", "Guinea": "Africa",
+  "Ivory Coast": "Africa", "Lesotho": "Africa", "Liberia": "Africa",
+  "Libya": "Africa", "Madagascar": "Africa", "Malawi": "Africa",
+  "Mali": "Africa", "Mauritania": "Africa", "Mauritius": "Africa",
+  "Morocco": "Africa", "Mozambique": "Africa", "Namibia": "Africa",
+  "Niger": "Africa", "Rwanda": "Africa", "Senegal": "Africa",
+  "Sierra Leone": "Africa", "Somalia": "Africa", "South Sudan": "Africa",
+  "Sudan": "Africa", "Tanzania": "Africa", "Togo": "Africa",
+  "Tunisia": "Africa", "Zambia": "Africa", "Zimbabwe": "Africa",
+  // Asia
+  "Afghanistan": "Asia", "Armenia": "Asia", "Azerbaijan": "Asia",
+  "Bahrain": "Asia", "Bhutan": "Asia", "Cambodia": "Asia",
+  "Georgia": "Asia", "Iraq": "Asia", "Kazakhstan": "Asia",
+  "Kuwait": "Asia", "Kyrgyzstan": "Asia", "Laos": "Asia",
+  "Mongolia": "Asia", "Myanmar": "Asia", "Nepal": "Asia",
+  "North Korea": "Asia", "Oman": "Asia", "Pakistan": "Asia",
+  "Philippines": "Asia", "Qatar": "Asia", "Saudi Arabia": "Asia",
+  "Sri Lanka": "Asia", "Tajikistan": "Asia", "Turkmenistan": "Asia",
+  "United Arab Emirates": "Asia", "Uzbekistan": "Asia",
+  "Vietnam": "Asia", "Yemen": "Asia",
+  // Europe
+  "Albania": "Europe", "Belarus": "Europe", "Bosnia and Herzegovina": "Europe",
+  "Bulgaria": "Europe", "Croatia": "Europe", "Cyprus": "Europe",
+  "Estonia": "Europe", "Hungary": "Europe", "Iceland": "Europe",
+  "Latvia": "Europe", "Lithuania": "Europe", "Luxembourg": "Europe",
+  "Malta": "Europe", "Moldova": "Europe", "Montenegro": "Europe",
+  "North Macedonia": "Europe", "Poland": "Europe", "Romania": "Europe",
+  "Serbia": "Europe", "Slovakia": "Europe", "Ukraine": "Europe",
+  // Middle East (subset of Asia kept distinct — the UI separates it)
+  "Iran": "Middle East", "Palestine": "Middle East", "Syria": "Middle East",
+  // North America
+  "Belize": "North America", "Costa Rica": "North America",
+  "Cuba": "North America", "Dominican Republic": "North America",
+  "El Salvador": "North America", "Guatemala": "North America",
+  "Haiti": "North America", "Honduras": "North America",
+  "Jamaica": "North America", "Nicaragua": "North America",
+  "Panama": "North America", "Puerto Rico": "North America",
+  "Trinidad and Tobago": "North America",
+  // Oceania
+  "Fiji": "Oceania", "Papua New Guinea": "Oceania",
+  // South America
+  "Bolivia": "South America", "Ecuador": "South America",
+  "Guyana": "South America", "Paraguay": "South America",
+  "Suriname": "South America", "Uruguay": "South America",
+};
+
+/** Region for a country name; undefined when truly unmapped. */
+export function regionForCountry(country: string): Region | undefined {
+  return DERIVED[country] ?? EXTRA[country];
+}

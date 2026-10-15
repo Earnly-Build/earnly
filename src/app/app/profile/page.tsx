@@ -15,11 +15,13 @@ import {
   VerifiedBadge,
 } from "@/components/ui";
 import { DEMO_REVIEWS, findOpportunity } from "@/lib/data";
+import { deriveReliabilityMetrics } from "@/lib/reputation";
 import { useApp } from "@/lib/store";
 
 export default function ProfilePage() {
-  const { student, applications, save, user } = useApp();
+  const { student, applications, txns, save, user } = useApp();
   const completed = applications.filter((a) => ["Completed", "Paid"].includes(a.stage));
+  const reliability = deriveReliabilityMetrics(applications, txns);
   const [editingSkills, setEditingSkills] = useState(false);
   const [draftSkills, setDraftSkills] = useState<string[]>(student.skills);
 
@@ -155,8 +157,8 @@ export default function ProfilePage() {
             <SectionHeading eyebrow="Reliability" title="Why this matters" />
             <div className="space-y-4">
               <Progress value={student.completionRate} label="Completed on time" />
-              <Progress value={92} label="Replied within a day" />
-              <Progress value={78} label="Repeat posters" />
+              <Progress value={reliability.repliedWithinDayRate} label="Replied within a day" />
+              <Progress value={reliability.repeatPostersRate} label="Repeat posters" />
             </div>
             <p className="mt-4 text-[12.5px] leading-relaxed text-ink3">
               Every rating comes from a poster after the work is paid, so it is proof of work rather

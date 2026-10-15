@@ -31,6 +31,10 @@ export const STELLAR = {
   baseReserveXlm: 0.5,
   /** Ledger close is ~5s; a payment is normally included in a few ledgers. */
   confirmationLedgers: 3,
+  /** Grace window before a Horizon 404 marks a pending transaction as failed (5 minutes). */
+  reconcileGraceMs: 5 * 60 * 1000,
+  /** Maximum 404 reconciliation attempts within the grace window before marking failed. */
+  reconcileMaxAttempts: 5,
 } as const;
 
 /* ------------------------------------------------------------------- EVM */

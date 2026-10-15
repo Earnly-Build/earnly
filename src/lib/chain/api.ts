@@ -3,6 +3,11 @@ import { databaseConfigured } from "../db";
 import { getSession, type SessionUser } from "../session";
 import { walletConfigProblem } from "./provisioning";
 
+// The shared contract lives one level up (no chain deps) — re-exported
+// here so every existing wallet-route import keeps working.
+export { errorResponse, okResponse, readJson, readString, readKey } from "../api";
+import { errorResponse } from "../api";
+
 /**
  * Shared guards for the wallet API. Every wallet route resolves the user from
  * the signed session cookie and works only with that user's rows: no route
@@ -32,39 +37,7 @@ export async function requireUser(): Promise<Guarded> {
   return { ok: true, user };
 }
 
-export function errorResponse(
-  code: string,
-  message: string,
-  status = 400,
-  retryable = false
-): NextResponse {
-  return NextResponse.json({ ok: false, code, error: message, retryable }, { status });
-}
 
-export function okResponse<T extends object>(payload: T): NextResponse {
-  return NextResponse.json({ ok: true, ...payload });
-}
 
-/** Reads a JSON body without ever throwing on malformed input. */
-export async function readJson(request: Request): Promise<Record<string, unknown>> {
-  try {
-    const body = (await request.json()) as unknown;
-    if (body && typeof body === "object") return body as Record<string, unknown>;
-  } catch {
-    /* fall through to an empty object */
-  }
-  return {};
-}
 
-export function readString(body: Record<string, unknown>, key: string): string {
-  const value = body[key];
-  return typeof value === "string" ? value : "";
-}
 
-export function readKey(body: Record<string, unknown>): string | null {
-  const raw = body.idempotencyKey;
-  if (typeof raw !== "string") return null;
-  const trimmed = raw.trim();
-  if (!trimmed || trimmed.length > 120) return null;
-  return trimmed;
-}

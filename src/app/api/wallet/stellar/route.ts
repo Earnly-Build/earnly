@@ -7,7 +7,14 @@ import {
   feeStats,
   reconcileStellarTransaction,
 } from "@/lib/chain/stellar";
-import { ensureWallet, listTransactions, markBalanceSynced, publicWallet } from "@/lib/chain/wallets";
+import {
+  ensureWallet,
+  listTransactions,
+  markBalanceSynced,
+  publicWallet,
+} from "@/lib/chain/wallets";
+import { mapConcurrent } from "@/lib/concurrency";
+import { assertSameOrigin, CsrfError } from "@/lib/csrf";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +23,14 @@ export const dynamic = "force-dynamic";
  * Horizon, the current fee, and merged activity.
  */
 export async function GET(request: Request) {
+  try {
+    assertSameOrigin(request);
+  } catch (e) {
+    if (e instanceof CsrfError)
+      return errorResponse("forbidden", e.message, 403);
+    throw e;
+  }
+
   const guard = await requireUser();
   if (!guard.ok) return guard.response;
 
@@ -27,14 +42,37 @@ export async function GET(request: Request) {
 
     // Resolve anything left in flight before reporting a status. Best effort:
     // a Horizon hiccup must not break the dashboard.
+    // Bounded-concurrency reconcile — 5 Horizon calls at a time, per-row
+    // failures swallowed: a Horizon hiccup must not break the dashboard.
     const rows = await listTransactions(guard.user.id, "stellar", 25);
-    for (const row of rows) {
-      if ((row.status === "pending" || row.status === "unknown") && row.tx_hash) {
+    await mapConcurrent(rows.filter(
+      (row) => (row.status === "pending" || row.status === "unknown") && row.tx_hash
+    ), 5, async (row) => {
+      try {
         await reconcileStellarTransaction(guard.user.id, row);
+      } catch {
+        // best effort
       }
-    }
+    });
 
-    const [account, fees] = await Promise.all([accountSnapshot(wallet.address), feeStats()]);
+    // Bounded reads — a timed-out Horizon degrades to a sparse snapshot
+    // instead of hanging the request until the platform kills it.
+    let account = null;
+    let fees = null;
+    try {
+      [account, fees] = await Promise.all([accountSnapshot(wallet.address), feeStats()]);
+    } catch (e) {
+      const se = e instanceof StellarError ? e : null;
+      if (!se?.retryable) throw e;
+      account = {
+        address: wallet.address, exists: false, funded: false, balances: [],
+        xlmBalance: "0", subentries: 0, minimumBalanceXlm: "0", spendableXlm: "0",
+        sequence: null, lastModifiedLedger: null,
+      };
+      fees = {
+        baseFee: "0", baseFeeXlm: "0", paymentFeeXlm: "0", source: "unavailable" as const,
+      };
+    }
     const activity = await stellarActivityFor(wallet, historyLimit);
     await markBalanceSynced(wallet.id);
 
@@ -60,7 +98,7 @@ export async function GET(request: Request) {
       },
       fees,
       activity: activity.items,
-      degraded: activity.degraded,
+      degraded: activity.degraded || fees.source === "unavailable",
       syncedAt: new Date().toISOString(),
     });
   } catch (error) {

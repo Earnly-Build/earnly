@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { OPPORTUNITIES, findOpportunity } from "@/lib/data";
-import { useApp } from "@/lib/store";
+import {useApp, NOTE_MAX} from "@/lib/store";
 import { deadlineIn, postedAgo } from "@/lib/format";
 import {
   Button,
@@ -27,7 +27,6 @@ const BACK: Record<string, { href: string; label: string }> = {
 export function OpportunityDetail({ id }: { id: string }) {
   const o = findOpportunity(id);
   const { applications, apply } = useApp();
-  const [applied, setApplied] = useState(false);
   const [openApply, setOpenApply] = useState(false);
   const [note, setNote] = useState("");
 
@@ -176,14 +175,19 @@ export function OpportunityDetail({ id }: { id: string }) {
         {/* ----------------------------------------------------- side */}
         <aside className="flex flex-col gap-4 lg:sticky lg:top-24">
           <div className="tagshape border border-rule bg-raised p-5">
-            {existing || applied ? (
+            {existing ? (
               <div>
                 <div className="flex items-center gap-2 text-positive">
                   <Icon name="check" size={17} />
                   <span className="text-[14px] font-bold">
-                    {existing ? `Application ${existing.stage.toLowerCase()}` : "Application sent"}
+                    {`Application ${existing.stage.toLowerCase()}`}
                   </span>
                 </div>
+                {existing?.note && (
+                  <p className="mt-2 rounded-[10px] border border-rule bg-ground p-3 text-[13px] text-ink2">
+                    <span className="font-semibold">Your note:</span> {existing.note}
+                  </p>
+                )}
                 <p className="mt-2 text-[13px] text-ink2">
                   {o.org} will reply through Earnly. You can follow the stage under My work.
                 </p>
@@ -288,6 +292,7 @@ export function OpportunityDetail({ id }: { id: string }) {
           <textarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
+            maxLength={NOTE_MAX}
             rows={4}
             placeholder="Two lines about why you can do this, and when you are free."
             className="w-full resize-none rounded-[14px] border border-rule bg-transparent p-3 text-[14px] outline-none placeholder:text-ink3"
@@ -301,8 +306,7 @@ export function OpportunityDetail({ id }: { id: string }) {
           full
           className="mt-5"
           onClick={() => {
-            apply(o.id);
-            setApplied(true);
+            apply(o.id, note.trim() || undefined);
             setOpenApply(false);
           }}
         >

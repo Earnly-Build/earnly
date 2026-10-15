@@ -2,7 +2,11 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AppProvider } from "@/lib/store";
 
+const appUrl = process.env.APP_URL || "https://earnly.vercel.app";
+const metadataBaseUrl = appUrl.startsWith("http://") || appUrl.startsWith("https://") ? appUrl : `https://${appUrl}`;
+
 export const metadata: Metadata = {
+  metadataBase: new URL(metadataBaseUrl),
   title: "Earnly — earn while you learn",
   description:
     "Verified students discover paid tasks, jobs and internships, get paid in USDC, and graduate with a record of real work instead of an empty CV.",

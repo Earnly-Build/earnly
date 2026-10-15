@@ -1,6 +1,7 @@
 import { errorResponse, okResponse, requireUser } from "@/lib/chain/api";
 import { StellarError, fundWithFriendbot } from "@/lib/chain/stellar";
 import { ensureWallet, recordTransaction } from "@/lib/chain/wallets";
+import { assertSameOrigin, CsrfError } from "@/lib/csrf";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +10,15 @@ export const dynamic = "force-dynamic";
  * Idempotent by nature: Friendbot refuses to fund an account twice, and we
  * check the account state before calling it.
  */
-export async function POST() {
+export async function POST(request: Request) {
+  try {
+    assertSameOrigin(request);
+  } catch (e) {
+    if (e instanceof CsrfError)
+      return errorResponse("forbidden", e.message, 403);
+    throw e;
+  }
+
   const guard = await requireUser();
   if (!guard.ok) return guard.response;
 

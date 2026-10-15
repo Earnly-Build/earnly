@@ -81,16 +81,19 @@ export function formatAtomic(
 export function toAtomic(amount: string | number, decimals: number): bigint {
   const raw = typeof amount === "string" ? amount.trim() : String(amount);
   const match = DECIMAL_RE.exec(raw);
-  if (!match) return parseDecimalFromFloat(Number(raw), decimals);
+  // Never convert through a float: String(1e-7) is "1e-7", String(1e21)
+  // is "1e+21" — neither parses as a decimal literal, and multiplying by
+  // 10**decimals reintroduces exactly the precision loss this module
+  // exists to remove. A non-literal input is a caller bug — refuse loudly.
+  if (!match) {
+    throw new Error(
+      `toAtomic: "${raw}" is not a decimal literal — pass an exact ` +
+      `string/number (scientific notation and malformed input are rejected).`
+    );
+  }
   const whole = match[1];
   const fraction = (match[2] ?? "").slice(0, decimals).padEnd(decimals, "0");
   return BigInt(whole + fraction);
-}
-
-/** Best-effort conversion for values that arrived as JSON numbers. */
-function parseDecimalFromFloat(value: number, decimals: number): bigint {
-  if (!Number.isFinite(value)) return 0n;
-  return BigInt(Math.round(value * 10 ** decimals));
 }
 
 /** Trims a decimal string for display without changing its value. */

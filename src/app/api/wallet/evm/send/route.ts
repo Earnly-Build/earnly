@@ -2,6 +2,7 @@ import { errorResponse, okResponse, readJson, readKey, readString, requireUser }
 import { EVM, explorerTxUrl } from "@/lib/chain/config";
 import { EvmError, previewEvmTransfer, sendEvmTransfer } from "@/lib/chain/evm";
 import { ensureWallet } from "@/lib/chain/wallets";
+import { assertSameOrigin, CsrfError } from "@/lib/csrf";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,14 @@ export const dynamic = "force-dynamic";
  * `confirm: true` and is protected by an idempotency key.
  */
 export async function POST(request: Request) {
+  try {
+    assertSameOrigin(request);
+  } catch (e) {
+    if (e instanceof CsrfError)
+      return errorResponse("forbidden", e.message, 403);
+    throw e;
+  }
+
   const guard = await requireUser();
   if (!guard.ok) return guard.response;
 

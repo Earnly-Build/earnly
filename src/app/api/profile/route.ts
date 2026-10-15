@@ -3,10 +3,11 @@ import { cleanEmail, cleanText } from "@/lib/auth";
 import { db, databaseConfigured } from "@/lib/db";
 import { getSession, loadUser } from "@/lib/session";
 import { ALL_SKILLS, MAX_SKILLS, mergeSkills } from "@/lib/skills";
+import { assertSameOrigin, CsrfError } from "@/lib/csrf";
+import { errorResponse } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
-const VERIFICATION = ["required", "pending", "verified", "failed"] as const;
 
 function stringList(value: unknown, max: number, itemMax = 40): string[] | null {
   if (!Array.isArray(value)) return null;
@@ -21,7 +22,7 @@ function stringList(value: unknown, max: number, itemMax = 40): string[] | null 
 
 export async function GET() {
   const user = await getSession();
-  if (!user) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+  if (!user) return errorResponse("unauthorized", "Not signed in.", 401);
   return NextResponse.json({ user });
 }
 
@@ -30,17 +31,25 @@ export async function GET() {
  * Everything is validated server-side; nothing is trusted from the browser.
  */
 export async function PUT(req: NextRequest) {
+  try {
+    assertSameOrigin(req);
+  } catch (e) {
+    if (e instanceof CsrfError)
+      return errorResponse("forbidden", e.message, 403);
+    throw e;
+  }
+
   if (!databaseConfigured) {
-    return NextResponse.json({ error: "Database is not configured." }, { status: 503 });
+    return errorResponse("unavailable", "Database is not configured.", 503);
   }
   const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+  if (!session) return errorResponse("unauthorized", "Not signed in.", 401);
 
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;
   } catch {
-    return NextResponse.json({ error: "Malformed request." }, { status: 400 });
+    return errorResponse("bad_request", "Malformed request.", 400);
   }
 
   const patch: Record<string, unknown> = {};
@@ -62,10 +71,9 @@ export async function PUT(req: NextRequest) {
     if (Number.isInteger(year) && year >= 1950 && year <= 2045) set("grad_year", year);
   }
 
-  if (body.verification !== undefined) {
-    const value = String(body.verification);
-    if ((VERIFICATION as readonly string[]).includes(value)) set("verification", value);
-  }
+  // `verification` is deliberately not writable here (issue #1): the
+  // trust flag only ever changes through the server-side verification
+  // workflow — a client-sent value is ignored outright.
 
   if (body.onboarded !== undefined) set("onboarded", Boolean(body.onboarded));
 
@@ -95,7 +103,7 @@ export async function PUT(req: NextRequest) {
     const name = cleanText(university.name, 160);
     const country = cleanText(university.country, 80);
     if (!name || !country) {
-      return NextResponse.json({ error: "A university needs a name and a country." }, { status: 400 });
+      return errorResponse("bad_request", "A university needs a name and a country.", 400);
     }
     set("university_id", cleanText(university.id, 200) ?? `custom-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`);
     set("university_name", name);
@@ -126,26 +134,33 @@ export async function PUT(req: NextRequest) {
       // The browser sends the full desired set, so this is a replace, not a merge.
       const desired = mergeSkills([], body.skills as string[]).slice(0, MAX_SKILLS);
       const wanted = new Map(desired.map((s) => [s.toLowerCase(), s]));
-      for (const row of existing) {
-        if (!wanted.has(row.skill.toLowerCase())) {
-          await sql`delete from user_skills where user_id = ${session.id} and skill = ${row.skill}`;
-        }
-      }
       const known = new Set(existing.map((s) => s.skill.toLowerCase()));
-      for (const [key, skill] of wanted) {
-        if (known.has(key)) continue;
-        await sql`
+      const additions = [...wanted.entries()]
+        .filter(([key]) => !known.has(key))
+        .map(([, skill]) => skill);
+      // Set-based sync inside one transaction — ≤3 statements regardless
+      // of how many skills changed, all-or-nothing (issue #22).
+      // Case-insensitive matching preserved via lower() comparisons.
+      const sync = [
+        sql`delete from user_skills
+            where user_id = ${session.id}
+            and lower(skill) <> all(${desired.map((s) => s.toLowerCase())}::text[])`,
+      ];
+      if (additions.length) {
+        sync.push(sql`
           insert into user_skills (user_id, skill, custom)
-          values (${session.id}, ${skill}, ${!ALL_SKILLS.includes(skill)})
+          select ${session.id}, s, not (s = any(${ALL_SKILLS}::text[]))
+          from unnest(${additions}::text[]) s
           on conflict (user_id, skill) do nothing
-        `;
+        `);
       }
+      await sql.transaction(sync);
     }
 
     const user = await loadUser(session.id);
     return NextResponse.json({ ok: true, user });
   } catch (error) {
     console.error("[earnly] profile update failed", error);
-    return NextResponse.json({ error: "We could not save that. Please try again." }, { status: 500 });
+    return errorResponse("internal", "We could not save that. Please try again.", 500);
   }
 }
