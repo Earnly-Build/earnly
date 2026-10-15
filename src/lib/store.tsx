@@ -15,12 +15,12 @@ import {
   DEMO_TXNS,
 } from "./data";
 import { DEFAULT_PREFS } from "./ai";
+import { loadPersisted, serializePersisted } from "./persistence";
+import type { Persisted } from "./persistence";
 import type {
   AiPrefs,
   AiResult,
   AppStage,
-  Application,
-  Notif,
   Student,
   Txn,
   VerificationState,
@@ -58,19 +58,6 @@ export interface SessionUser {
   providers: string[];
   profile: ProfileRow | null;
   skills: string[];
-}
-
-interface Persisted {
-  signedIn: boolean;
-  authMethod: "google" | "email" | null;
-  verification: VerificationState;
-  onboarded: boolean;
-  prefs: AiPrefs;
-  aiPrefs: AiPrefs;
-  saved: string[];
-  applications: Application[];
-  notifications: Notif[];
-  theme: "dark" | "light";
 }
 
 const initial: Persisted = {
@@ -177,7 +164,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // one synchronous setState is the intentional hand-off from SSR. The
       // splash in AppShell keeps the first paint identical.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (raw) setState({ ...initial, ...(JSON.parse(raw) as Persisted) });
+      if (raw) setState(loadPersisted(raw, initial));
     } catch {
       /* a prototype store; a corrupt value just starts fresh */
     }
@@ -194,7 +181,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!ready) return;
     try {
-      window.localStorage.setItem(KEY, JSON.stringify(state));
+      window.localStorage.setItem(KEY, serializePersisted(state));
     } catch {
       /* private mode */
     }
