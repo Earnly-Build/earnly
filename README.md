@@ -32,6 +32,21 @@ npm run wallet:live-check
 Node 20.9+ (Next.js 16 requirement). Fonts are self-hosted in `public/fonts`,
 so the build does not need network access.
 
+### Prototype storage versions
+
+The `earnly:v3` localStorage key now stores `{ v: 1, data: {...} }`; the key name
+is independent of the payload schema version. Loading uses the pure helpers in
+`src/lib/persistence.ts`. The original flat payload is legacy v0: known fields
+are copied over the demo defaults, validated, and written as v1 on the next
+save. An explicit `{ v: 0, data: { theme: "dark" } }`, for example, migrates to
+v1 with a dark theme and defaults for missing legacy fields. Both paths are tested.
+
+Invalid JSON, malformed state, and unsupported versions fall back to the full
+initial state. Future versions are never partially applied. Obsolete root fields
+are not retained. Add an explicit migration and tests when changing the schema;
+do not silently reinterpret a newer payload. Storage access can still fail in
+private mode, and readiness still waits for session refresh before route guards run.
+
 ### Environment variables
 
 Copy the shape below into `.env.local` for development, and set the same keys
