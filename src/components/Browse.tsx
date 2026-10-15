@@ -6,6 +6,7 @@ import { useApp } from "@/lib/store";
 import type { Opportunity, OpportunityKind, WorkMode } from "@/lib/types";
 import { OpportunityCard } from "./cards";
 import { Button, EmptyState, Icon, Tag } from "./ui";
+import { weeklyEquivalent } from "@/lib/pay";
 
 type Sort = "match" | "newest" | "pay";
 
@@ -41,7 +42,7 @@ export function Browse({
     let out = pool.filter((o) => {
       if (cat !== "All" && o.category !== cat) return false;
       if (mode !== "All" && o.mode !== mode) return false;
-      if (minPay > 0 && o.pay.amount < minPay) return false;
+      if (minPay > 0 && weeklyEquivalent(o.pay) < minPay) return false;
       if (savedOnly && !saved.includes(o.id)) return false;
       if (t && !`${o.title} ${o.org} ${o.skills.join(" ")} ${o.summary}`.toLowerCase().includes(t))
         return false;
@@ -50,7 +51,7 @@ export function Browse({
     out = [...out].sort((a, b) => {
       if (sort === "match") return b.match - a.match;
       if (sort === "newest") return a.postedDaysAgo - b.postedDaysAgo;
-      return b.pay.amount - a.pay.amount;
+      return weeklyEquivalent(b.pay) - weeklyEquivalent(a.pay);
     });
     return out;
   }, [pool, q, cat, mode, minPay, sort, savedOnly, saved]);
