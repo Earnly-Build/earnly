@@ -1,5 +1,6 @@
 import { OPPORTUNITIES } from "./data";
 import type { AiPrefs, AiResult, Opportunity } from "./types";
+import { weeklyEquivalent } from "./pay";
 
 /**
  * Opportunity discovery, stubbed.
