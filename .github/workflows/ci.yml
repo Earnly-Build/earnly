@@ -1,5 +1,17 @@
 name: CI
 
+# Lint, test and build every pull request (issue #17).
+#
+# The build is intentionally run with no secrets: the app builds without
+# DATABASE_URL / WALLET_MASTER_KEY / GOOGLE_CLIENT_SECRET (see README —
+# env vars are only needed at runtime), so CI needs no environment setup.
+#
+# push is scoped to main so branch pushes that already run through their PR
+# do not double-run the pipeline.
+on:
+  pull_request:
+  push:
+    branches: [main]
 on:
   push:
     branches:
@@ -27,6 +39,7 @@ permissions:
   contents: read
 
 concurrency:
+  group: ci-${{ github.ref }}
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
@@ -34,11 +47,16 @@ jobs:
   ci:
     name: lint + test + build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
