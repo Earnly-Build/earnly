@@ -150,7 +150,11 @@ export default function PaymentsPage() {
         />
         <p className="-mt-2 mb-4 max-w-[62ch] text-[12.5px] leading-relaxed text-ink3">
           USDC settlement arrives with the off-ramp. These figures are demo money: they are not chain
-          balances and no transaction backs them.
+          balances and no transaction backs them. Bounty payments for merged PRs are handled
+          separately via the wallet provided in your claim comment.
+        </p>
+        <p className="-mt-2 mb-4 max-w-[62ch] text-[12.5px] leading-relaxed text-ink3">
+          Need help with a bounty? Check <a href="https://github.com/Earnly-Build/earnly/blob/main/CONTRIBUTING.md#claiming-a-bounty" className="underline">CONTRIBUTING.md</a> or open an issue if your payment is overdue.
         </p>
       </div>
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-[1.4fr_1fr]">
